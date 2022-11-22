@@ -26,112 +26,34 @@ under the License.
 
 # Audit log plugin
 
-Doris's audit log plugin was developed based on FE's plugin framework. Is an optional plugin. Users can install or uninstall this plugin at runtime.
+Doris's audit log plugin was developed based on FE's plugin framework. Is an optional plugin. Users can enable or disable this plugin at mysql client.
 
 This plugin can periodically import the FE audit log into the specified Doris cluster, so that users can easily view and analyze the audit log through SQL.
 
-## Compile, Configure and Deploy
-
-### FE Configuration
-
-FE's plugin framework is an experimental feature, which is closed by default. In the FE configuration file, add `plugin_enable = true` to enable the plugin framework.
+## Configure, Enable and Disable
 
 ### AuditLoader Configuration
 
-The configuration of the auditloader plugin is located in `$ {DORIS}/fe_plugins/auditloader/src/main/assembly/`.
+The configuration of the auditloader plugin is in FE configuration. See the comments of the configuration items.
 
-Open `plugin.conf` for configuration. See the comments of the configuration items.
-
-### Compile
-
-After executing `sh build_plugin.sh` in the Doris code directory, you will get the `auditloader.zip` file in the `fe_plugins/output` directory.
-
-### Deployment
-
-You can place this file on an http download server or copy(or unzip) it to the specified directory of all FEs. Here we use the latter.
-
-### Installation
-
-After deployment is complete, and before installing the plugin, you need to create the audit database and tables previously specified in `plugin.conf`. The database and table creation statement is as follows:
+### Enable
 
 ```
-create database doris_audit_db__;
+alter system enable general log;
+alter system enable slow log;
+```
 
-create table doris_audit_db__.doris_audit_log_tbl__
-(
-    query_id varchar(48) comment "Unique query id",
-    `time` datetime not null comment "Query start time",
-    client_ip varchar(32) comment "Client IP",
-    user varchar(64) comment "User name",
-    db varchar(96) comment "Database of this query",
-    state varchar(8) comment "Query result state. EOF, ERR, OK",
-    query_time bigint comment "Query execution time in millisecond",
-    scan_bytes bigint comment "Total scan bytes of this query",
-    scan_rows bigint comment "Total scan rows of this query",
-    return_rows bigint comment "Returned rows of this query",
-    stmt_id int comment "An incremental id of statement",
-    is_query tinyint comment "Is this statemt a query. 1 or 0",
-    frontend_ip varchar(32) comment "Frontend ip of executing this statement",
-    cpu_time_ms bigint comment "Total scan cpu time in millisecond of this query",
-    sql_hash varchar(48) comment "Hash value for this query",
-    sql_digest varchar(48) comment "Sql digest for this query",
-    peak_memory_bytes bigint comment "Peak memory bytes used on all backends of this query",
-    stmt string comment "The original statement, trimed if longer than 2G "
-) engine=OLAP
-duplicate key(query_id, `time`, client_ip)
-partition by range(`time`) ()
-distributed by hash(query_id) buckets 1
-properties(
-    "dynamic_partition.time_unit" = "DAY",
-    "dynamic_partition.start" = "-30",
-    "dynamic_partition.end" = "3",
-    "dynamic_partition.prefix" = "p",
-    "dynamic_partition.buckets" = "1",
-    "dynamic_partition.enable" = "true",
-    "replication_num" = "3"
-);
+### Disable
 
-create table doris_audit_db__.doris_slow_log_tbl__
-(
-    query_id varchar(48) comment "Unique query id",
-    `time` datetime not null comment "Query start time",
-    client_ip varchar(32) comment "Client IP",
-    user varchar(64) comment "User name",
-    db varchar(96) comment "Database of this query",
-    state varchar(8) comment "Query result state. EOF, ERR, OK",
-    query_time bigint comment "Query execution time in millisecond",
-    scan_bytes bigint comment "Total scan bytes of this query",
-    scan_rows bigint comment "Total scan rows of this query",
-    return_rows bigint comment "Returned rows of this query",
-    stmt_id int comment "An incremental id of statement",
-    is_query tinyint comment "Is this statemt a query. 1 or 0",
-    frontend_ip varchar(32) comment "Frontend ip of executing this statement",
-    cpu_time_ms bigint comment "Total scan cpu time in millisecond of this query",
-    sql_hash varchar(48) comment "Hash value for this query",
-    sql_digest varchar(48) comment "Sql digest for this query",
-    peak_memory_bytes bigint comment "Peak memory bytes used on all backends of this query",
-    stmt string comment "The original statement, trimed if longer than 2G"
-) engine=OLAP
-duplicate key(query_id, `time`, client_ip)
-partition by range(`time`) ()
-distributed by hash(query_id) buckets 1
-properties(
-    "dynamic_partition.time_unit" = "DAY",
-    "dynamic_partition.start" = "-30",
-    "dynamic_partition.end" = "3",
-    "dynamic_partition.prefix" = "p",
-    "dynamic_partition.buckets" = "1",
-    "dynamic_partition.enable" = "true",
-    "replication_num" = "3"
-);
+```
+alter system disable general log;
+alter system disable slow log;
 ```
 
 >**Notice**
 >
-> In the above table structure: stmt string, this can only be used in 0.15 and later versions, in previous versions, the field type used varchar
+After successful enable plugin, you can see the installed plug-ins through `SHOW PLUGINS`, and the status is `INSTALLED`, and the `DESCRIBTION` field shows which table you are currently importing data into.
 
-The `dynamic_partition` attribute selects the number of days to keep the audit log based on your needs.
+After the general log function is enabled, the plug-in continuously inserts audit logs into the general table at specified intervals.
 
-After that, connect to Doris and use the `INSTALL PLUGIN` command to complete the installation. After successful installation, you can see the installed plug-ins through `SHOW PLUGINS`, and the status is `INSTALLED`.
-
-Upon completion, the plug-in will continuously import audit date into this table at specified intervals.
+After slow log is enabled, the plug-in continuously inserts audit logs into the slow table at specified intervals.

@@ -145,6 +145,10 @@ public class PaloAuth implements Writable {
         return ldapInfo;
     }
 
+    public RoleManager getRoleManager() {
+        return roleManager;
+    }
+
     public void setLdapInfo(LdapInfo ldapInfo) {
         this.ldapInfo = ldapInfo;
     }
@@ -690,6 +694,11 @@ public class PaloAuth implements Writable {
                 stmt.getPassword(), stmt.isIfNotExist(), stmt.getPasswordOptions(), false);
     }
 
+    public void createUser(UserIdentity userIdent, String roleName, byte[] password,
+            boolean ignoreIfExists, PasswordOptions passwordOptions, boolean isReplay) throws DdlException {
+        createUserInternal(userIdent, roleName, password, ignoreIfExists, passwordOptions, isReplay);
+    }
+
     public void replayCreateUser(PrivInfo privInfo) {
         try {
             createUserInternal(privInfo.getUserIdent(), privInfo.getRole(), privInfo.getPasswd(), false,
@@ -889,6 +898,11 @@ public class PaloAuth implements Writable {
             grantInternal(stmt.getUserIdent(), stmt.getQualifiedRole(), stmt.getResourcePattern(), privs,
                           true /* err on non exist */, false /* not replay */);
         }
+    }
+
+    public void grant(UserIdentity userIdent, String role, TablePattern tblPattern,
+            PrivBitSet privs, boolean errOnNonExist, boolean isReplay) throws DdlException {
+        grantInternal(userIdent, role, tblPattern, privs, errOnNonExist, isReplay);
     }
 
     public void replayGrant(PrivInfo privInfo) {

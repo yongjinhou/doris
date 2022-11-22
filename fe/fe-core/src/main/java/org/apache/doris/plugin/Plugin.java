@@ -38,13 +38,15 @@ public abstract class Plugin implements Closeable {
      * So this method must be idempotent
      */
     public void init(PluginInfo info, PluginContext ctx) throws PluginException {
+    }
 
+    public void setEnableLog(boolean enableGeneralLog, boolean enableSlowLog) {
     }
 
     /**
      * invoke when the plugin uninstall
      */
-    @Override
+    // @Override
     public void close() throws IOException {
     }
 

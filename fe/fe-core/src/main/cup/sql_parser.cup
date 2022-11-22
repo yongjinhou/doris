@@ -327,6 +327,7 @@ terminal String
     KW_DESC,
     KW_DESCRIBE,
     KW_DIAGNOSE,
+    KW_DISABLE,
     KW_DISK,
     KW_DISTINCT,
     KW_DISTINCTPC,
@@ -432,6 +433,7 @@ terminal String
     KW_LOCAL,
     KW_LOCATION,
     KW_LOCK,
+    KW_LOG,
     KW_LOW_PRIORITY,
     KW_MAP,
     KW_MATERIALIZED,
@@ -1598,6 +1600,15 @@ alter_system_clause ::=
 	{:
 		RESULT = new ModifyBackendClause(hostPorts, properties);
 	:}
+    /* Plugin */
+    | KW_ENABLE ident_or_text:logType KW_LOG
+    {:
+        RESULT = new EnablePluginClause(logType);
+    :}
+    | KW_DISABLE ident_or_text:logType KW_LOG
+    {:
+        RESULT = new DisablePluginClause(logType);
+    :}
     ;
 
 // Sync Stmt
@@ -6570,6 +6581,8 @@ keyword ::=
     | KW_LOCK:id
     {: RESULT = id; :}
     | KW_UNLOCK:id
+    {: RESULT = id; :}
+    | KW_LOG:id
     {: RESULT = id; :}
     | KW_MATERIALIZED:id
     {: RESULT = id; :}

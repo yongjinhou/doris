@@ -210,8 +210,9 @@ public class OperationType {
 
     // plugin 270~275
     public static final short OP_INSTALL_PLUGIN = 270;
-
     public static final short OP_UNINSTALL_PLUGIN = 271;
+    public static final short OP_ENABLE_PLUGIN = 272;
+    public static final short OP_DISABLE_PLUGIN = 273;
 
     // resource 276~290
     public static final short OP_CREATE_RESOURCE = 276;

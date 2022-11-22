@@ -23,6 +23,7 @@ import org.apache.doris.common.util.DigitalVersion;
 import org.apache.doris.persist.gson.GsonUtils;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.gson.annotations.SerializedName;
 import org.apache.commons.lang.StringUtils;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
@@ -85,6 +87,9 @@ public class PluginInfo implements Writable {
 
     @SerializedName("properties")
     protected Map<String, String> properties = Maps.newHashMap();
+
+    @SerializedName("logTypeList")
+    protected List<String> logTypeList = Lists.newArrayList();
 
     public PluginInfo() { }
 
@@ -192,6 +197,10 @@ public class PluginInfo implements Writable {
         return type.ordinal();
     }
 
+    public void setDescription(String description) {
+        this.description = description;
+    }
+
     public String getDescription() {
         return description;
     }
@@ -222,6 +231,14 @@ public class PluginInfo implements Writable {
 
     public Map<String, String> getProperties() {
         return properties;
+    }
+
+    public void setLogTypeList(List<String> logTypeList) {
+        this.logTypeList = logTypeList;
+    }
+
+    public List<String> getlogTypeList() {
+        return logTypeList;
     }
 
     @Override

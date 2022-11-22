@@ -25,9 +25,11 @@ import org.apache.doris.analysis.AlterLoadErrorUrlClause;
 import org.apache.doris.analysis.CancelAlterSystemStmt;
 import org.apache.doris.analysis.CancelStmt;
 import org.apache.doris.analysis.DecommissionBackendClause;
+import org.apache.doris.analysis.DisablePluginClause;
 import org.apache.doris.analysis.DropBackendClause;
 import org.apache.doris.analysis.DropFollowerClause;
 import org.apache.doris.analysis.DropObserverClause;
+import org.apache.doris.analysis.EnablePluginClause;
 import org.apache.doris.analysis.ModifyBackendClause;
 import org.apache.doris.analysis.ModifyBrokerClause;
 import org.apache.doris.catalog.Database;
@@ -51,6 +53,7 @@ import org.apache.commons.lang.NotImplementedException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.IOException;
 import java.util.List;
 
 /*
@@ -172,6 +175,20 @@ public class SystemHandler extends AlterHandler {
             Env.getCurrentEnv().getLoadInstance().setLoadErrorHubInfo(clause.getProperties());
         } else if (alterClause instanceof ModifyBackendClause) {
             Env.getCurrentSystemInfo().modifyBackends(((ModifyBackendClause) alterClause));
+        } else if (alterClause instanceof EnablePluginClause) {
+            EnablePluginClause clause = (EnablePluginClause) alterClause;
+            try {
+                Env.getCurrentEnv().initPlugin(clause.getLogType());
+            } catch (IOException e) {
+                LOG.debug("IOException: {}", e);
+            }
+        } else if (alterClause instanceof DisablePluginClause) {
+            DisablePluginClause clause = (DisablePluginClause) alterClause;
+            try {
+                Env.getCurrentEnv().disablePlugin(clause.getLogType());
+            } catch (IOException e) {
+                LOG.debug("IOException: {}", e);
+            }
         } else {
             Preconditions.checkState(false, alterClause.getClass());
         }

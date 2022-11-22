@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.plugin.audit;
+package org.apache.doris.qe;
+
+import org.apache.doris.common.Config;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -23,18 +25,15 @@ import org.apache.logging.log4j.Logger;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Calendar;
-import java.util.List;
-import java.util.Map;
 
 public class DorisStreamLoader {
-    private final static Logger LOG = LogManager.getLogger(DorisStreamLoader.class);
+    private static final Logger LOG = LogManager.getLogger(DorisStreamLoader.class);
     private static String loadUrlPattern = "http://%s/api/%s/%s/_stream_load?";
     private String hostPort;
     private String db;
@@ -47,19 +46,22 @@ public class DorisStreamLoader {
     private String authEncoding;
     private String feIdentity;
 
-    public DorisStreamLoader(AuditLoaderPlugin.AuditLoaderConf conf) {
-        this.hostPort = conf.frontendHostPort;
-        this.db = conf.database;
-        this.auditLogTbl = conf.auditLogTable;
-        this.slowLogTbl = conf.slowLogTable;
-        this.user = conf.user;
-        this.passwd = conf.password;
+    public DorisStreamLoader(String feIdentity) {
+        String host = Config.priority_networks.substring(0, Config.priority_networks.indexOf("/"));
+        String port = String.valueOf(Config.http_port);
+        this.hostPort = host + ":" + port;
+        this.db = Config.database;
+        this.auditLogTbl = Config.general_log_table;
+        this.slowLogTbl = Config.slow_log_table;
+        this.user = Config.user;
+        this.passwd = Config.password;
 
         this.auditLogLoadUrlStr = String.format(loadUrlPattern, hostPort, db, auditLogTbl);
         this.slowLogLoadUrlStr = String.format(loadUrlPattern, hostPort, db, slowLogTbl);
-        this.authEncoding = Base64.getEncoder().encodeToString(String.format("%s:%s", user, passwd).getBytes(StandardCharsets.UTF_8));
+        this.authEncoding = Base64.getEncoder().encodeToString(String.format("%s:%s", user, passwd)
+            .getBytes(StandardCharsets.UTF_8));
         // currently, FE identity is FE's IP, so we replace the "." in IP to make it suitable for label
-        this.feIdentity = conf.feIdentity.replaceAll("\\.", "_");
+        this.feIdentity = feIdentity.replaceAll("\\.", "_");
     }
 
     private HttpURLConnection getConnection(String urlStr, String label) throws IOException {
@@ -73,8 +75,9 @@ public class DorisStreamLoader {
 
         conn.addRequestProperty("label", label);
         conn.addRequestProperty("max_filter_ratio", "1.0");
-        conn.addRequestProperty("columns", "query_id, `time`, client_ip, user, db, state, query_time, scan_bytes," +
-                " scan_rows, return_rows, stmt_id, is_query, frontend_ip, cpu_time_ms, sql_hash, sql_digest, peak_memory_bytes, stmt");
+        conn.addRequestProperty("columns", "query_id, `time`, client_ip, user, db, state, query_time, scan_bytes,"
+                + " scan_rows, return_rows, stmt_id, is_query, frontend_ip,"
+                + " cpu_time_ms, sql_hash, sql_digest, peak_memory_bytes, stmt");
 
         conn.setDoOutput(true);
         conn.setDoInput(true);
@@ -89,9 +92,9 @@ public class DorisStreamLoader {
         sb.append("-H \"").append("Expect\":").append("\"100-continue\" \\\n  ");
         sb.append("-H \"").append("Content-Type\":").append("\"text/plain; charset=UTF-8\" \\\n  ");
         sb.append("-H \"").append("max_filter_ratio\":").append("\"1.0\" \\\n  ");
-        sb.append("-H \"").append("columns\":").append("\"query_id, time, client_ip, user, db, state, query_time," +
-                " scan_bytes, scan_rows, return_rows, stmt_id, is_query, frontend_ip, cpu_time_ms, sql_hash," +
-                " sql_digest, peak_memory_bytes, stmt\" \\\n  ");
+        sb.append("-H \"").append("columns\":").append("\"query_id, time, client_ip, user, db, state, query_time,"
+                + " scan_bytes, scan_rows, return_rows, stmt_id, is_query, frontend_ip, cpu_time_ms, sql_hash,"
+                + " sql_digest, peak_memory_bytes, stmt\" \\\n  ");
         sb.append("\"").append(conn.getURL()).append("\"");
         return sb.toString();
     }
@@ -131,7 +134,7 @@ public class DorisStreamLoader {
                 label = "slow" + label;
                 feConn = getConnection(slowLogLoadUrlStr, label);
             } else {
-                label = "audit" + label;
+                label = "general" + label;
                 feConn = getConnection(auditLogLoadUrlStr, label);
             }
             int status = feConn.getResponseCode();
@@ -156,14 +159,14 @@ public class DorisStreamLoader {
             String respMsg = beConn.getResponseMessage();
             String response = getContent(beConn);
 
-            LOG.info("AuditLoader plugin load with label: {}, response code: {}, msg: {}, content: {}",
+            LOG.info("__builtin_AuditLoader plugin load with label: {}, response code: {}, msg: {}, content: {}",
                     label, status, respMsg, response);
 
             return new LoadResponse(status, respMsg, response);
 
         } catch (Exception e) {
             e.printStackTrace();
-            String err = "failed to load audit via AuditLoader plugin with label: " + label;
+            String err = "failed to load audit via __builtin_AuditLoader plugin with label: " + label;
             LOG.warn(err, e);
             return new LoadResponse(-1, e.getMessage(), err);
         } finally {

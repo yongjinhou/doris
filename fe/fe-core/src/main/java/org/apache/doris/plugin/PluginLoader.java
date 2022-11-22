@@ -33,6 +33,10 @@ public abstract class PluginLoader {
         INSTALLED,
         UNINSTALLING,
         UNINSTALLED,
+        ENABLING,
+        ENABLED,
+        DISABLING,
+        DISABLED,
         ERROR;
 
         private String msg;
@@ -90,6 +94,9 @@ public abstract class PluginLoader {
 
     public PluginInfo getPluginInfo() throws IOException, UserException {
         return pluginInfo;
+    }
+
+    public void setPluginInfo(boolean enableGeneralLog, boolean enableSlowLog) {
     }
 
     public Plugin getPlugin() {

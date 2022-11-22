@@ -620,6 +620,18 @@ public class JournalEntity implements Writable {
                 isRead = true;
                 break;
             }
+            case OperationType.OP_ENABLE_PLUGIN: {
+                data = new Text();
+                ((Text) data).readFields(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_DISABLE_PLUGIN: {
+                data = new Text();
+                ((Text) data).readFields(in);
+                isRead = true;
+                break;
+            }
             case OperationType.OP_REMOVE_ALTER_JOB_V2: {
                 data = RemoveAlterJobV2OperationLog.read(in);
                 isRead = true;

@@ -19,7 +19,10 @@ package org.apache.doris.plugin;
 
 import org.apache.doris.common.UserException;
 
+import com.google.common.collect.Lists;
+
 import java.io.IOException;
+import java.util.List;
 
 public class BuiltinPluginLoader extends PluginLoader {
 
@@ -41,5 +44,19 @@ public class BuiltinPluginLoader extends PluginLoader {
             pluginUninstallValid();
             plugin.close();
         }
+    }
+
+    @Override
+    public void setPluginInfo(boolean enableGeneralLog, boolean enableSlowLog) {
+        List<String> logTypeList = Lists.newArrayList();
+        if (enableGeneralLog && enableSlowLog) {
+            logTypeList.add("general");
+            logTypeList.add("slow");
+        } else if (enableGeneralLog) {
+            logTypeList.add("general");
+        } else {
+            logTypeList.add("slow");
+        }
+        pluginInfo.setLogTypeList(logTypeList);
     }
 }

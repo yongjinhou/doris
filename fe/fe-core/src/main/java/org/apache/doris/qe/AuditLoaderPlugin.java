@@ -15,60 +15,74 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.plugin.audit;
+package org.apache.doris.qe;
 
-import com.google.common.collect.Queues;
+import org.apache.doris.common.Config;
+import org.apache.doris.common.util.DigitalVersion;
 import org.apache.doris.plugin.AuditEvent;
 import org.apache.doris.plugin.AuditPlugin;
 import org.apache.doris.plugin.Plugin;
 import org.apache.doris.plugin.PluginContext;
 import org.apache.doris.plugin.PluginException;
 import org.apache.doris.plugin.PluginInfo;
-import org.apache.doris.common.Config;
+import org.apache.doris.plugin.PluginInfo.PluginType;
 
+import com.google.common.collect.Queues;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.Map;
-import java.util.Properties;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /*
  * This plugin will load audit log to specified doris table at specified interval
  */
 public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
-    private final static Logger LOG = LogManager.getLogger(AuditLoaderPlugin.class);
+    private static final Logger LOG = LogManager.getLogger(AuditLoaderPlugin.class);
 
     private static final ThreadLocal<SimpleDateFormat> dateFormatContainer = ThreadLocal.withInitial(
             () -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
 
-    private StringBuilder auditLogBuffer = new StringBuilder();
+    private StringBuilder generalLogBuffer = new StringBuilder();
     private StringBuilder slowLogBuffer = new StringBuilder();
-    private long lastLoadTimeAuditLog = 0;
+    private long lastLoadTimeGeneralLog = 0;
     private long lastLoadTimeSlowLog = 0;
+    private boolean enableGeneralLog = false;
+    private boolean enableSlowLog = false;
 
     private BlockingQueue<AuditEvent> auditEventQueue;
     private DorisStreamLoader streamLoader;
     private Thread loadThread;
 
-    private AuditLoaderConf conf;
     private volatile boolean isClosed = false;
     private volatile boolean isInit = false;
+    private final PluginInfo pluginInfo;
+    // the identity of FE which run this plugin
+    public String feIdentity = "";
+
+    public AuditLoaderPlugin() {
+        pluginInfo = new PluginInfo("__builtin_AuditLoader", PluginType.AUDIT,
+                "load audit log to olap table", DigitalVersion.fromString("1.0.0"),
+                DigitalVersion.fromString("1.8.0"), AuditLoaderPlugin.class.getName(), null, null);
+    }
+
+    public PluginInfo getPluginInfo() {
+        return pluginInfo;
+    }
+
+    @Override
+    public void setEnableLog(boolean enableGeneralLog, boolean enableSlowLog) {
+        this.enableGeneralLog = enableGeneralLog;
+        this.enableSlowLog = enableSlowLog;
+    }
 
     @Override
     public void init(PluginInfo info, PluginContext ctx) throws PluginException {
@@ -78,13 +92,13 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
             if (isInit) {
                 return;
             }
-            this.lastLoadTimeAuditLog = System.currentTimeMillis();
+            this.lastLoadTimeGeneralLog = System.currentTimeMillis();
             this.lastLoadTimeSlowLog = System.currentTimeMillis();
 
-            loadConfig(ctx, info.getProperties());
+            feIdentity = ctx.getFeIdentity();
 
-            this.auditEventQueue = Queues.newLinkedBlockingDeque(conf.maxQueueSize);
-            this.streamLoader = new DorisStreamLoader(conf);
+            this.auditEventQueue = Queues.newLinkedBlockingDeque(Config.max_queue_size);
+            this.streamLoader = new DorisStreamLoader(feIdentity);
             this.loadThread = new Thread(new LoadWorker(this.streamLoader), "audit loader thread");
             this.loadThread.start();
 
@@ -92,39 +106,11 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
         }
     }
 
-    private void loadConfig(PluginContext ctx, Map<String, String> pluginInfoProperties) throws PluginException {
-        Path pluginPath = FileSystems.getDefault().getPath(ctx.getPluginPath());
-        if (!Files.exists(pluginPath)) {
-            throw new PluginException("plugin path does not exist: " + pluginPath);
-        }
-
-        Path confFile = pluginPath.resolve("plugin.conf");
-        if (!Files.exists(confFile)) {
-            throw new PluginException("plugin conf file does not exist: " + confFile);
-        }
-
-        final Properties props = new Properties();
-        try (InputStream stream = Files.newInputStream(confFile)) {
-            props.load(stream);
-        } catch (IOException e) {
-            throw new PluginException(e.getMessage());
-        }
-
-        for (Map.Entry<String, String> entry : pluginInfoProperties.entrySet()) {
-            props.setProperty(entry.getKey(), entry.getValue());
-        }
-
-        final Map<String, String> properties = props.stringPropertyNames().stream()
-                .collect(Collectors.toMap(Function.identity(), props::getProperty));
-        conf = new AuditLoaderConf();
-        conf.init(properties);
-        conf.feIdentity = ctx.getFeIdentity();
-    }
-
     @Override
     public void close() throws IOException {
         super.close();
         isClosed = true;
+
         if (loadThread != null) {
             try {
                 loadThread.join();
@@ -150,10 +136,12 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
     }
 
     private void assembleAudit(AuditEvent event) {
-        if (conf.enableSlowLog && event.queryTime > Config.qe_slow_log_ms) {
+        if (enableSlowLog && event.queryTime > Config.qe_slow_log_ms) {
             fillLogBuffer(event, slowLogBuffer);
         }
-        fillLogBuffer(event, auditLogBuffer);
+        if (enableGeneralLog) {
+            fillLogBuffer(event, generalLogBuffer);
+        }
     }
 
     private void fillLogBuffer(AuditEvent event, StringBuilder logBuffer) {
@@ -182,7 +170,7 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
     }
 
     private String truncateByBytes(String str) {
-        int maxLen = Math.min(conf.max_stmt_length, str.getBytes().length);
+        int maxLen = Math.min(Config.max_stmt_length, str.getBytes().length);
         if (maxLen >= str.getBytes().length) {
             return str;
         }
@@ -198,11 +186,12 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
     }
 
     private void loadIfNecessary(DorisStreamLoader loader, boolean slowLog) {
-        StringBuilder logBuffer = slowLog ? slowLogBuffer : auditLogBuffer;
-        long lastLoadTime = slowLog ? lastLoadTimeSlowLog : lastLoadTimeAuditLog;
+        StringBuilder logBuffer = slowLog ? slowLogBuffer : generalLogBuffer;
+        long lastLoadTime = slowLog ? lastLoadTimeSlowLog : lastLoadTimeGeneralLog;
         long currentTime = System.currentTimeMillis();
-        
-        if (logBuffer.length() >= conf.maxBatchSize || currentTime - lastLoadTime >= conf.maxBatchIntervalSec * 1000) {         
+
+        if (logBuffer.length() >= Config.max_batch_size
+                || currentTime - lastLoadTime >= Config.max_batch_interval_sec * 1000) {
             // begin to load
             try {
                 DorisStreamLoader.LoadResponse response = loader.loadBatch(logBuffer, slowLog);
@@ -223,85 +212,11 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
             this.slowLogBuffer = new StringBuilder();
             lastLoadTimeSlowLog = currentTime;
         } else {
-            this.auditLogBuffer = new StringBuilder();
-            lastLoadTimeAuditLog = currentTime;
+            this.generalLogBuffer = new StringBuilder();
+            lastLoadTimeGeneralLog = currentTime;
         }
 
         return;
-    }
-
-    public static class AuditLoaderConf {
-        public static final String PROP_MAX_BATCH_SIZE = "max_batch_size";
-        public static final String PROP_MAX_BATCH_INTERVAL_SEC = "max_batch_interval_sec";
-        public static final String PROP_MAX_QUEUE_SIZE = "max_queue_size";
-        public static final String PROP_FRONTEND_HOST_PORT = "frontend_host_port";
-        public static final String PROP_USER = "user";
-        public static final String PROP_PASSWORD = "password";
-        public static final String PROP_DATABASE = "database";
-        public static final String PROP_TABLE = "table";
-        public static final String PROP_AUDIT_LOG_TABLE = "audit_log_table";
-        public static final String PROP_SLOW_LOG_TABLE = "slow_log_table";
-        public static final String PROP_ENABLE_SLOW_LOG = "enable_slow_log";
-        // the max stmt length to be loaded in audit table.
-        public static final String MAX_STMT_LENGTH = "max_stmt_length";
-
-        public long maxBatchSize = 50 * 1024 * 1024;
-        public long maxBatchIntervalSec = 60;
-        public int maxQueueSize = 1000;
-        public String frontendHostPort = "127.0.0.1:8030";
-        public String user = "root";
-        public String password = "";
-        public String database = "doris_audit_db__";
-        public String auditLogTable = "doris_audit_log_tbl__";
-        public String slowLogTable = "doris_slow_log_tbl__";
-        public boolean enableSlowLog = false;
-        // the identity of FE which run this plugin
-        public String feIdentity = "";
-        public int max_stmt_length = 4096;
-
-        public void init(Map<String, String> properties) throws PluginException {
-            try {
-                if (properties.containsKey(PROP_MAX_BATCH_SIZE)) {
-                    maxBatchSize = Long.valueOf(properties.get(PROP_MAX_BATCH_SIZE));
-                }
-                if (properties.containsKey(PROP_MAX_BATCH_INTERVAL_SEC)) {
-                    maxBatchIntervalSec = Long.valueOf(properties.get(PROP_MAX_BATCH_INTERVAL_SEC));
-                }
-                if (properties.containsKey(PROP_MAX_QUEUE_SIZE)) {
-                    maxQueueSize = Integer.valueOf(properties.get(PROP_MAX_QUEUE_SIZE));
-                }
-                if (properties.containsKey(PROP_FRONTEND_HOST_PORT)) {
-                    frontendHostPort = properties.get(PROP_FRONTEND_HOST_PORT);
-                }
-                if (properties.containsKey(PROP_USER)) {
-                    user = properties.get(PROP_USER);
-                }
-                if (properties.containsKey(PROP_PASSWORD)) {
-                    password = properties.get(PROP_PASSWORD);
-                }
-                if (properties.containsKey(PROP_DATABASE)) {
-                    database = properties.get(PROP_DATABASE);
-                }
-                // If plugin.conf is not changed, the audit logs are imported to previous table
-                if (properties.containsKey(PROP_TABLE)) {
-                    auditLogTable = properties.get(PROP_TABLE);
-                }
-                if (properties.containsKey(PROP_AUDIT_LOG_TABLE)) {
-                    auditLogTable = properties.get(PROP_AUDIT_LOG_TABLE);
-                }
-                if (properties.containsKey(PROP_SLOW_LOG_TABLE)) {
-                    slowLogTable = properties.get(PROP_SLOW_LOG_TABLE);
-                }
-                if (properties.containsKey(PROP_ENABLE_SLOW_LOG)) {
-                    enableSlowLog = Boolean.valueOf(properties.get(PROP_ENABLE_SLOW_LOG));
-                }
-                if (properties.containsKey(MAX_STMT_LENGTH)) {
-                    max_stmt_length = Integer.parseInt(properties.get(MAX_STMT_LENGTH));
-                }
-            } catch (Exception e) {
-                throw new PluginException(e.getMessage());
-            }
-        }
     }
 
     private class LoadWorker implements Runnable {
@@ -317,12 +232,14 @@ public class AuditLoaderPlugin extends Plugin implements AuditPlugin {
                     AuditEvent event = auditEventQueue.poll(5, TimeUnit.SECONDS);
                     if (event != null) {
                         assembleAudit(event);
-                        // process slow audit logs
-                        if (conf.enableSlowLog) {
+                        if (enableSlowLog) {
+                            // process slow logs
                             loadIfNecessary(loader, true);
                         }
-                        // process all audit logs
-                        loadIfNecessary(loader, false);
+                        if (enableGeneralLog) {
+                            // process general logs
+                            loadIfNecessary(loader, false);
+                        }
                     }
                 } catch (InterruptedException ie) {
                     LOG.debug("encounter exception when loading current audit batch", ie);

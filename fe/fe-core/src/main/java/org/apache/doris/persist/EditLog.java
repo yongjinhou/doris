@@ -786,6 +786,16 @@ public class EditLog {
                     env.replayUninstallPlugin(pluginInfo);
                     break;
                 }
+                case OperationType.OP_ENABLE_PLUGIN: {
+                    String logType = ((Text) journal.getData()).toString();
+                    env.replayEnablePlugin(logType);
+                    break;
+                }
+                case OperationType.OP_DISABLE_PLUGIN: {
+                    String logType = ((Text) journal.getData()).toString();
+                    env.replayDisablePlugin(logType);
+                    break;
+                }
                 case OperationType.OP_SET_REPLICA_STATUS: {
                     SetReplicaStatusOperationLog log = (SetReplicaStatusOperationLog) journal.getData();
                     env.replaySetReplicaStatus(log);
@@ -1522,12 +1532,20 @@ public class EditLog {
         logEdit(OperationType.OP_REPLACE_TEMP_PARTITION, info);
     }
 
-    public void logInstallPlugin(PluginInfo plugin) {
-        logEdit(OperationType.OP_INSTALL_PLUGIN, plugin);
+    public void logInstallPlugin(PluginInfo info) {
+        logEdit(OperationType.OP_INSTALL_PLUGIN, info);
     }
 
-    public void logUninstallPlugin(PluginInfo plugin) {
-        logEdit(OperationType.OP_UNINSTALL_PLUGIN, plugin);
+    public void logUninstallPlugin(PluginInfo info) {
+        logEdit(OperationType.OP_UNINSTALL_PLUGIN, info);
+    }
+
+    public void logEnablePlugin(String logType) {
+        logEdit(OperationType.OP_ENABLE_PLUGIN, new Text(logType));
+    }
+
+    public void logDisablePlugin(String logType) {
+        logEdit(OperationType.OP_DISABLE_PLUGIN, new Text(logType));
     }
 
     public void logSetReplicaStatus(SetReplicaStatusOperationLog log) {

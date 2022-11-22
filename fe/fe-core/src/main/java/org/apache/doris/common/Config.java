@@ -119,12 +119,64 @@ public class Config extends ConfigBase {
     /**
      * plugin_dir:
      *      plugin install directory
+     *
+     * plugin_enable:
+     *      Whether could install external plugins, default is true
+     *
+     * plugin_enable_audit_log_loader:
+     *      Whether could enable audit loader plugin, default is false
+     *
+     * max_batch_size:
+     *      The max size of a batch, default is 50MB
+     *
+     * max_batch_interval_sec:
+     *      The max interval of batch loaded, default is 60 seconds
+     *
+     * max_queue_size:
+     *      The capacity of audit queue, default is 1000
+     *
+     * max_stmt_length:
+     *      The max stmt length to be loaded in audit table, default is 4096
+     *
+     * user:
+     *      Doris user. This user must have LOAD_PRIV to the audit table
+     *
+     * password:
+     *      Doris user's password, default is null
+     *
+     * database:
+     *      Database of the audit table
+     *
+     * general_log_table:
+     *      Audit table name, to save the general log data
+     *
+     * slow_log_table:
+     *      Audit table name, to save the slow log data
      */
     @ConfField
     public static String plugin_dir = System.getenv("DORIS_HOME") + "/plugins";
-
     @ConfField(mutable = true, masterOnly = true)
     public static boolean plugin_enable = true;
+    @ConfField(mutable = true, masterOnly = true)
+    public static boolean plugin_enable_audit_log_loader = true;
+    @ConfField
+    public static long max_batch_size = 50 * 1024 * 1024;
+    @ConfField
+    public static long max_batch_interval_sec = 60;
+    @ConfField
+    public static int max_queue_size = 1000;
+    @ConfField
+    public static int max_stmt_length = 4096;
+    @ConfField
+    public static String user = "doris_audit_loader_plugin_user__";
+    @ConfField
+    public static String password = "";
+    @ConfField
+    public static String database = "doris_audit_db__";
+    @ConfField
+    public static String general_log_table = "doris_general_log_tbl__";
+    @ConfField
+    public static String slow_log_table = "doris_slow_log_tbl__";
 
     /**
      * The default parallelism of the load execution plan

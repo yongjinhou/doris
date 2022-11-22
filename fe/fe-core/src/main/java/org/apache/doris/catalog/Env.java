@@ -39,6 +39,7 @@ import org.apache.doris.analysis.AlterSystemStmt;
 import org.apache.doris.analysis.AlterTableStmt;
 import org.apache.doris.analysis.AlterViewStmt;
 import org.apache.doris.analysis.AnalyzeStmt;
+import org.apache.doris.analysis.Analyzer;
 import org.apache.doris.analysis.BackupStmt;
 import org.apache.doris.analysis.CancelAlterSystemStmt;
 import org.apache.doris.analysis.CancelAlterTableStmt;
@@ -67,6 +68,8 @@ import org.apache.doris.analysis.LinkDbStmt;
 import org.apache.doris.analysis.MigrateDbStmt;
 import org.apache.doris.analysis.ModifyDistributionClause;
 import org.apache.doris.analysis.PartitionRenameClause;
+import org.apache.doris.analysis.PassVar;
+import org.apache.doris.analysis.PasswordOptions;
 import org.apache.doris.analysis.RecoverDbStmt;
 import org.apache.doris.analysis.RecoverPartitionStmt;
 import org.apache.doris.analysis.RecoverTableStmt;
@@ -75,9 +78,14 @@ import org.apache.doris.analysis.ReplacePartitionClause;
 import org.apache.doris.analysis.RestoreStmt;
 import org.apache.doris.analysis.RollupRenameClause;
 import org.apache.doris.analysis.ShowAlterStmt.AlterType;
+import org.apache.doris.analysis.SqlParser;
+import org.apache.doris.analysis.SqlScanner;
+import org.apache.doris.analysis.StatementBase;
+import org.apache.doris.analysis.TablePattern;
 import org.apache.doris.analysis.TableRenameClause;
 import org.apache.doris.analysis.TruncateTableStmt;
 import org.apache.doris.analysis.UninstallPluginStmt;
+import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.backup.BackupHandler;
 import org.apache.doris.blockrule.SqlBlockRuleMgr;
 import org.apache.doris.catalog.ColocateTableIndex.GroupId;
@@ -118,6 +126,7 @@ import org.apache.doris.common.util.PrintableMap;
 import org.apache.doris.common.util.PropertyAnalyzer;
 import org.apache.doris.common.util.QueryableReentrantLock;
 import org.apache.doris.common.util.SmallFileMgr;
+import org.apache.doris.common.util.SqlParserUtils;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.consistency.ConsistencyChecker;
@@ -167,6 +176,8 @@ import org.apache.doris.meta.MetaContext;
 import org.apache.doris.metric.MetricRepo;
 import org.apache.doris.mtmv.MTMVJobManager;
 import org.apache.doris.mysql.privilege.PaloAuth;
+import org.apache.doris.mysql.privilege.PaloPrivilege;
+import org.apache.doris.mysql.privilege.PrivBitSet;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.persist.AnalysisJobScheduler;
 import org.apache.doris.persist.BackendIdsUpdateInfo;
@@ -261,6 +272,7 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -5005,6 +5017,93 @@ public class Env {
     public void replayUninstallPlugin(PluginInfo pluginInfo) throws MetaNotFoundException {
         try {
             pluginMgr.uninstallPlugin(pluginInfo.getName());
+        } catch (Exception e) {
+            throw new MetaNotFoundException(e);
+        }
+    }
+
+    public void initPlugin(String logType) throws IOException, UserException {
+        if (!"general".equalsIgnoreCase(logType) && !"slow".equalsIgnoreCase(logType)) {
+            throw new UserException("logType error: " + logType);
+        }
+        createSchemaForPlugin(logType);
+        enablePlugin(logType);
+    }
+
+    private void createSchemaForPlugin(String logType) throws UserException {
+        if (Config.plugin_enable_audit_log_loader) {
+            // create database for __builtin_AuditLoader plugin.
+            LOG.info("start to create database for plugin");
+            String clusterName = "default_cluster";
+            String fullDbName = clusterName + ":" + Config.database;
+            catalogMgr.getInternalCatalog().createDb(clusterName, fullDbName, true);
+
+            // create tables for __builtin_AuditLoader plugin.
+            LOG.info("start to create tables for plugin");
+            int backendNum = systemInfo.getClusterBackends(clusterName).size();
+            String originCreateTblStmt = PluginMgr.generateOriginCreateTblStmt(logType, backendNum);
+            SqlScanner input = new SqlScanner(new StringReader(originCreateTblStmt), 0L);
+            SqlParser parser = new SqlParser(input);
+            StatementBase parsedCreateTblStmt = null;
+            try {
+                parsedCreateTblStmt = SqlParserUtils.getMultiStmts(parser).get(0);
+            } catch (Exception e) {
+                LOG.debug("origin stmt: {}; Error message: {}", originCreateTblStmt, e);
+            }
+            ConnectContext context = ConnectContext.get();
+            Analyzer analyzer = new Analyzer(context.getEnv(), context);
+            parsedCreateTblStmt.analyze(analyzer);
+            catalogMgr.getInternalCatalog().createTable((CreateTableStmt) parsedCreateTblStmt);
+
+            // create user for __builtin_AuditLoader plugin.
+            LOG.info("start to create load user for plugin");
+            String pluginUser = Config.user;
+            UserIdentity userIdentity = new UserIdentity(pluginUser, "%");
+            userIdentity.analyze(clusterName);
+            PassVar passVar = new PassVar(Config.password, false);
+            passVar.analyze();
+            auth.createUser(userIdentity, null, passVar.getScrambled(), true, PasswordOptions.UNSET_OPTION, false);
+
+            // Assign LOAD_PRIV to specified table for plugin user
+            LOG.info("start to assign privilege for plugin");
+            TablePattern generalTablePattern = new TablePattern(InternalCatalog.INTERNAL_CATALOG_NAME,
+                    Config.database, Config.general_log_table);
+            generalTablePattern.analyze(clusterName);
+            TablePattern slowTablePattern = new TablePattern(InternalCatalog.INTERNAL_CATALOG_NAME,
+                    Config.database, Config.slow_log_table);
+            slowTablePattern.analyze(clusterName);
+            PrivBitSet privs = PrivBitSet.of(PaloPrivilege.LOAD_PRIV);
+            auth.grant(userIdentity, null, generalTablePattern, privs, true, false);
+            auth.grant(userIdentity, null, slowTablePattern, privs, true, false);
+        }
+    }
+
+    private void enablePlugin(String logType) throws IOException, UserException {
+        pluginMgr.enablePlugin(logType);
+        editLog.logEnablePlugin(logType);
+        LOG.info("enable log type: " + logType);
+    }
+
+    public void replayEnablePlugin(String logType) throws MetaNotFoundException {
+        try {
+            pluginMgr.enablePlugin(logType);
+        } catch (Exception e) {
+            throw new MetaNotFoundException(e);
+        }
+    }
+
+    public void disablePlugin(String logType) throws IOException, UserException {
+        if (!"general".equalsIgnoreCase(logType) && !"slow".equalsIgnoreCase(logType)) {
+            throw new UserException("logType error: " + logType);
+        }
+        pluginMgr.disablePlugin(logType);
+        editLog.logDisablePlugin(logType);
+        LOG.info("disable log type: " + logType);
+    }
+
+    public void replayDisablePlugin(String logType) throws MetaNotFoundException {
+        try {
+            pluginMgr.disablePlugin(logType);
         } catch (Exception e) {
             throw new MetaNotFoundException(e);
         }

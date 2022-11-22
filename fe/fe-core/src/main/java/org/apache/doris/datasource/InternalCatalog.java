@@ -418,6 +418,35 @@ public class InternalCatalog implements CatalogIf<Database> {
         }
     }
 
+    public void createDb(String clusterName, String fullDbName, boolean ignoreIfExists) throws DdlException {
+        long id = Env.getCurrentEnv().getNextId();
+        Database db = new Database(id, fullDbName);
+        db.setClusterName(clusterName);
+
+        if (!tryLock(false)) {
+            throw new DdlException("Failed to acquire catalog lock. Try again");
+        }
+        try {
+            if (!nameToCluster.containsKey(clusterName)) {
+                ErrorReport.reportDdlException(ErrorCode.ERR_CLUSTER_NO_SELECT_CLUSTER, clusterName);
+            }
+            if (fullNameToDb.containsKey(fullDbName)) {
+                if (ignoreIfExists) {
+                    LOG.info("create database[{}] which already exists", fullDbName);
+                    return;
+                } else {
+                    ErrorReport.reportDdlException(ErrorCode.ERR_DB_CREATE_EXISTS, fullDbName);
+                }
+            } else {
+                unprotectCreateDb(db);
+                Env.getCurrentEnv().getEditLog().logCreateDb(db);
+            }
+        } finally {
+            unlock();
+        }
+        LOG.info("createDb dbName = " + fullDbName + ", id = " + id);
+    }
+
     /**
      * For replaying creating database.
      *

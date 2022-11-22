@@ -26,6 +26,7 @@ import org.apache.doris.common.io.Writable;
 import org.apache.doris.common.util.PrintableMap;
 import org.apache.doris.plugin.PluginInfo.PluginType;
 import org.apache.doris.plugin.PluginLoader.PluginStatus;
+import org.apache.doris.qe.AuditLoaderPlugin;
 import org.apache.doris.qe.AuditLogBuilder;
 
 import com.google.common.base.Strings;
@@ -53,6 +54,52 @@ public class PluginMgr implements Writable {
     private final Map<String, PluginLoader>[] plugins;
     // all dynamic plugins should have unique names,
     private final Set<String> dynamicPluginNames;
+    private boolean enableGeneralLog = false;
+    private boolean enableSlowLog = false;
+
+    public static String generateOriginCreateTblStmt(String logType, int backendNum) {
+        int replicationNum = backendNum > 3 ? 3 : backendNum;
+        String replicaNum = String.valueOf(replicationNum);
+        String originStmtLogTbl = " ("
+                + " query_id varchar(48) comment \"Unique query id\","
+                + " `time` datetime not null comment \"Query start time\","
+                + " client_ip varchar(32) comment \"Client IP\","
+                + " user varchar(64) comment \"User name\","
+                + " db varchar(96) comment \"Database of this query\","
+                + " state varchar(8) comment \"Query result state. EOF, ERR, OK\","
+                + " query_time bigint comment \"Query execution time in millisecond\","
+                + " scan_bytes bigint comment \"Total scan bytes of this query\","
+                + " scan_rows bigint comment \"Total scan rows of this query\","
+                + " return_rows bigint comment \"Returned rows of this query\","
+                + " stmt_id int comment \"An incremental id of statement\","
+                + " is_query tinyint comment \"Is this statemt a query. 1 or 0\","
+                + " frontend_ip varchar(32) comment \"Frontend ip of executing this statement\","
+                + " cpu_time_ms bigint comment \"Total scan cpu time in millisecond of this query\","
+                + " sql_hash varchar(48) comment \"Hash value for this query\","
+                + "sql_digest varchar(48) comment \"Sql digest for this query\","
+                + " peak_memory_bytes bigint comment \"Peak memory bytes used on all backends of this query\","
+                + " stmt string comment \"The original statement, trimed if longer than 2G\""
+                + " ) engine=OLAP"
+                + " duplicate key(query_id, `time`, client_ip)"
+                + " partition by range(`time`) ()"
+                + " distributed by hash(query_id) buckets 1"
+                + " properties("
+                + " \"dynamic_partition.time_unit\" = \"DAY\","
+                + " \"dynamic_partition.start\" = \"-30\","
+                + " \"dynamic_partition.end\" = \"3\","
+                + " \"dynamic_partition.prefix\" = \"p\","
+                + " \"dynamic_partition.buckets\" = \"1\","
+                + " \"dynamic_partition.enable\" = \"true\","
+                + " \"replication_num\" = \"" + replicaNum + "\""
+                + " )";
+        String originStmtAuditLogTbl = "create table if not exists ";
+        if ("general".equalsIgnoreCase(logType)) {
+            originStmtAuditLogTbl += Config.database + "." + Config.general_log_table + originStmtLogTbl;
+        } else {
+            originStmtAuditLogTbl += Config.database + "." + Config.slow_log_table + originStmtLogTbl;
+        }
+        return originStmtAuditLogTbl;
+    }
 
     public PluginMgr() {
         plugins = new Map[PluginType.MAX_PLUGIN_TYPE_SIZE];
@@ -78,6 +125,12 @@ public class PluginMgr implements Writable {
         initBuiltinPlugins();
     }
 
+    private boolean checkPluginNameExist(PluginInfo info) {
+        synchronized (plugins) {
+            return plugins[info.getTypeId()].containsKey(info.getName());
+        }
+    }
+
     private boolean checkDynamicPluginNameExist(String name) {
         synchronized (dynamicPluginNames) {
             return dynamicPluginNames.contains(name);
@@ -97,13 +150,86 @@ public class PluginMgr implements Writable {
     }
 
     private void initBuiltinPlugins() {
-        // AuditLog
+        // AuditLogBuilder
         AuditLogBuilder auditLogBuilder = new AuditLogBuilder();
         if (!registerBuiltinPlugin(auditLogBuilder.getPluginInfo(), auditLogBuilder)) {
             LOG.warn("failed to register audit log builder");
         }
 
         // other builtin plugins
+    }
+
+    public void enablePlugin(String logType) throws IOException, UserException {
+        AuditLoaderPlugin plugin = new AuditLoaderPlugin();
+        PluginInfo info = plugin.getPluginInfo();
+        PluginLoader pluginLoader = new BuiltinPluginLoader(Config.plugin_dir, info, plugin);
+
+        try {
+            boolean enableLog = "general".equalsIgnoreCase(logType) ? enableGeneralLog : enableSlowLog;
+            if (checkPluginNameExist(info) && enableLog) {
+                throw new UserException(logType + " log has already been enabled");
+            }
+            if (checkPluginNameExist(info) && !enableGeneralLog && !enableSlowLog) {
+                throw new UserException("__builtin_AuditLoader plugin has already been installed");
+            }
+
+            if (!enableGeneralLog && !enableSlowLog) {
+                pluginLoader.setStatus(PluginStatus.ENABLING);
+                // install plugin
+                pluginLoader.install();
+                pluginLoader.setStatus(PluginStatus.ENABLED);
+                plugins[info.getTypeId()].put(info.getName(), pluginLoader);
+            }
+
+            setEnableLog(logType, true);
+            PluginLoader loader = plugins[info.getTypeId()].get(info.getName());
+            loader.getPlugin().setEnableLog(enableGeneralLog, enableSlowLog);
+            loader.setPluginInfo(enableGeneralLog, enableSlowLog);
+        } catch (IOException | UserException e) {
+            pluginLoader.uninstall();
+            throw e;
+        }
+    }
+
+    public void disablePlugin(String logType) throws IOException, UserException {
+        for (int i = 0; i < PluginType.MAX_PLUGIN_TYPE_SIZE; i++) {
+            if (plugins[i].containsKey("__builtin_AuditLoader")) {
+                boolean enableLog = "general".equalsIgnoreCase(logType) ? enableGeneralLog : enableSlowLog;
+                if (!enableLog) {
+                    throw new DdlException(logType + " log does not enable");
+                }
+
+                PluginLoader loader = plugins[i].get("__builtin_AuditLoader");
+                if (loader == null) {
+                    continue;
+                }
+
+                setEnableLog(logType, false);
+                loader.getPlugin().setEnableLog(enableGeneralLog, enableSlowLog);
+                loader.setPluginInfo(enableGeneralLog, enableSlowLog);
+
+                if (!enableGeneralLog && !enableSlowLog) {
+                    loader.pluginUninstallValid();
+                    loader.setStatus(PluginStatus.DISABLING);
+                    // uninstall plugin
+                    loader.uninstall();
+                    loader.setStatus(PluginStatus.DISABLED);
+                    // disable succeed, remove the plugin
+                    plugins[i].remove("__builtin_AuditLoader");
+                }
+                return;
+            }
+        }
+
+        throw new DdlException(logType + " log does not enable");
+    }
+
+    private void setEnableLog(String logType, boolean enableLog) {
+        if ("general".equalsIgnoreCase(logType)) {
+            enableGeneralLog = enableLog;
+        } else {
+            enableSlowLog = enableLog;
+        }
     }
 
     // install a plugin from user's command.
@@ -229,7 +355,8 @@ public class PluginMgr implements Writable {
     public final Plugin getActivePlugin(String name, PluginType type) {
         PluginLoader loader = plugins[type.ordinal()].get(name);
 
-        if (null != loader && loader.getStatus() == PluginStatus.INSTALLED) {
+        if (null != loader && (loader.getStatus() == PluginStatus.INSTALLED
+                || loader.getStatus() == PluginStatus.ENABLED)) {
             return loader.getPlugin();
         }
 
@@ -241,7 +368,7 @@ public class PluginMgr implements Writable {
         List<Plugin> l = Lists.newArrayListWithCapacity(m.size());
 
         m.values().forEach(d -> {
-            if (d.getStatus() == PluginStatus.INSTALLED) {
+            if (d.getStatus() == PluginStatus.INSTALLED || d.getStatus() == PluginStatus.ENABLED) {
                 l.add(d.getPlugin());
             }
         });
@@ -249,13 +376,14 @@ public class PluginMgr implements Writable {
         return Collections.unmodifiableList(l);
     }
 
-    public final List<PluginInfo> getAllDynamicPluginInfo() {
+    public final List<PluginInfo> getAllPluginInfoExceptLogBuilder() {
         List<PluginInfo> list = Lists.newArrayList();
         for (Map<String, PluginLoader> map : plugins) {
             map.values().forEach(loader -> {
                 try {
-                    if (loader.isDynamicPlugin()) {
-                        list.add(loader.getPluginInfo());
+                    PluginInfo info = loader.getPluginInfo();
+                    if (!"__builtin_AuditLogBuilder".equalsIgnoreCase(info.getName())) {
+                        list.add(info);
                     }
                 } catch (Exception e) {
                     LOG.warn("load plugin from {} failed", loader.source, e);
@@ -270,7 +398,7 @@ public class PluginMgr implements Writable {
         List<List<String>> rows = Lists.newArrayList();
         for (Map<String, PluginLoader> map : plugins) {
             for (Map.Entry<String, PluginLoader> entry : map.entrySet()) {
-                List<String> r = Lists.newArrayList();
+                List<String> row = Lists.newArrayList();
                 PluginLoader loader = entry.getValue();
 
                 PluginInfo pi = null;
@@ -281,23 +409,41 @@ public class PluginMgr implements Writable {
                     LOG.warn("failed to get plugin info for plugin: {}", entry.getKey(), e);
                 }
 
-                r.add(entry.getKey());
-                r.add(pi != null ? pi.getType().name() : "UNKNOWN");
-                r.add(pi != null ? pi.getDescription() : "UNKNOWN");
-                r.add(pi != null ? pi.getVersion().toString() : "UNKNOWN");
-                r.add(pi != null ? pi.getJavaVersion().toString() : "UNKNOWN");
-                r.add(pi != null ? pi.getClassName() : "UNKNOWN");
-                r.add(pi != null ? pi.getSoName() : "UNKNOWN");
+                row.add(entry.getKey());
+                row.add(pi != null ? pi.getType().name() : "UNKNOWN");
+                row.add(pi != null ? pi.getDescription() : "UNKNOWN");
+                row.add(pi != null ? pi.getVersion().toString() : "UNKNOWN");
+                row.add(pi != null ? pi.getJavaVersion().toString() : "UNKNOWN");
+                row.add(pi != null ? pi.getClassName() : "UNKNOWN");
+                row.add(pi != null ? pi.getSoName() : "UNKNOWN");
                 if (Strings.isNullOrEmpty(loader.source)) {
-                    r.add("Builtin");
+                    row.add("Builtin");
                 } else {
-                    r.add(loader.source);
+                    row.add(loader.source);
                 }
 
-                r.add(loader.getStatus().toString());
-                r.add(pi != null ? "{" + new PrintableMap<>(pi.getProperties(),
+                row.add(loader.getStatus().toString());
+                row.add(pi != null ? "{" + new PrintableMap<>(pi.getProperties(),
                         "=", true, false, true) + "}" : "UNKNOWN");
-                rows.add(r);
+
+                if ("__builtin_AuditLoader".equalsIgnoreCase(pi.getName())) {
+                    if (enableGeneralLog) {
+                        String generalTbl = Config.database + "." + Config.general_log_table;
+                        row.set(0, "__builtin_GeneralLogLoader");
+                        row.set(2, "load audit logs to " + generalTbl);
+                        rows.add(row);
+                    }
+                    if (enableSlowLog) {
+                        List<String> rowTemp = Lists.newArrayList();
+                        rowTemp.addAll(row);
+                        String slowTbl = Config.database + "." + Config.slow_log_table;
+                        rowTemp.set(0, "__builtin_SlowLogLoader");
+                        rowTemp.set(2, "load audit logs to " + slowTbl);
+                        rows.add(rowTemp);
+                    }
+                    continue;
+                }
+                rows.add(row);
             }
         }
         return rows;
@@ -308,7 +454,14 @@ public class PluginMgr implements Writable {
         for (int i = 0; i < size; i++) {
             try {
                 PluginInfo pluginInfo = PluginInfo.read(dis);
-                replayLoadDynamicPlugin(pluginInfo);
+                if ("__builtin_AuditLoader".equalsIgnoreCase(pluginInfo.getName())) {
+                    List<String> logTypeList = pluginInfo.getlogTypeList();
+                    for (String logType : logTypeList) {
+                        enablePlugin(logType);
+                    }
+                } else {
+                    replayLoadDynamicPlugin(pluginInfo);
+                }
             } catch (Exception e) {
                 LOG.warn("load plugin failed.", e);
             }
@@ -318,7 +471,7 @@ public class PluginMgr implements Writable {
     @Override
     public void write(DataOutput out) throws IOException {
         // only need to persist dynamic plugins
-        List<PluginInfo> list = getAllDynamicPluginInfo();
+        List<PluginInfo> list = getAllPluginInfoExceptLogBuilder();
         int size = list.size();
         out.writeInt(size);
         for (PluginInfo pc : list) {
